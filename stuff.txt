@@ -1,0 +1,7 @@
+maximizing lifetime, ratio = 320:
+
+g_2   = 0.8314-0.4985j
+eps_d = 3.9336+0.7104j
+T_x   = 0.1749 us
+T_z   = 56.1553 us
+eta   = 321.0  (target: 320.0)

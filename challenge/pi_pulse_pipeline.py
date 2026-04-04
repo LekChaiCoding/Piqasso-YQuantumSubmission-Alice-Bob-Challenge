@@ -1,413 +1,386 @@
 """
-Simple Pi Pulse — End-to-End Online Optimization & Calibration Pipeline
+Cat-Qubit Parallel Optimisation Comparison
 
-Extracted from 1-challenge.ipynb. This script:
-  - Compares four optimizers on pi-pulse calibration (no drift):
-      1. CMA-ES
-      2. PPO  (Proximal Policy Optimization)
-      3. Bayesian Optimization  (Gaussian-Process surrogate)
-      4. Batch SPSA  (Simultaneous Perturbation Stochastic Approximation)
-  - Produces a single epoch-vs-reward plot with all four curves.
+Four optimisers race to find stabilisation parameters (g₂, ε_d) that
+maximise lifetimes T_x, T_z while keeping noise-bias η = T_z/T_x ≈ 320.
+
+Cost (minimised):
+    L = -(w_x·T_x + w_z·T_z) + λ·(η/η_goal − 1)²
 """
 
-import dynamiqs as dq
-import jax.numpy as jnp
+import warnings
+warnings.filterwarnings("ignore", message=".*SparseDIAQArray.*")
+
+import atexit
+import os
 import numpy as np
+import jax.numpy as jnp
+import dynamiqs as dq
+from concurrent.futures import ProcessPoolExecutor
+from scipy.optimize import least_squares
 from matplotlib import pyplot as plt
-from jax import vmap, jit
 from cmaes import SepCMA
-from skopt import Optimizer as BayesOptimizer
-from skopt.space import Real
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import Matern, ConstantKernel
 
-# ============================================================
-# Commented-out code: Rabi Chevron sweep (not needed for
-# optimizer benchmarking)
-# ============================================================
+# ── Physics ──────────────────────────────────────────────────
+NA, NB  = 15, 5
+KAPPA_B = 10.0       # buffer decay rate       [MHz]
+KAPPA_A = 1.0        # single-photon loss rate [MHz]
 
-# def run_rabi_chevron():
-#     """Sweep amplitude and frequency of a transverse drive on an ideal qubit."""
-#     fq = 5  # [GHz]
-#     H0 = 2 * jnp.pi * fq * dq.sigmaz() / 2
-#     g_d = 2 * jnp.pi * 0.01  # [GHz]
-#     omega_01 = 2 * jnp.pi * fq
-#     omegas = omega_01 + 2 * jnp.pi * jnp.linspace(-0.02, 0.02, 41)
-#     amp_factors = jnp.linspace(0, 4.0, 51).reshape(-1, 1)
-#     f = lambda t: amp_factors * g_d * jnp.cos(omegas * t)
-#     Hx = dq.modulated(f, dq.sigmax())
-#     Ht = H0 + Hx
-#     g_ket = dq.basis(2, 0)
-#     ts = jnp.linspace(0, 50, 2)
-#     results = dq.sesolve(Ht, g_ket, ts)
-#     szt = dq.expect(dq.sigmaz(), results.states)
-#     szt = szt[:, :, -1].reshape(szt.shape[0], szt.shape[1])
-#     fig, ax = plt.subplots(1, 1, figsize=(3, 2), dpi=200)
-#     im = ax.pcolormesh(amp_factors.flatten(), omegas/(2*jnp.pi), szt.real.T, cmap="plasma_r")
-#     ax.set_xlabel("Amplitude Factor"); ax.set_ylabel("Drive Frequency (GHz)")
-#     fig.colorbar(im, ax=ax)
-#     fig, ax = plt.subplots(1, 1, figsize=(3, 2), dpi=200)
-#     im = ax.pcolormesh(amp_factors.flatten(), omegas/(2*jnp.pi), jnp.log10(1+szt.real.T), cmap="plasma_r")
-#     ax.set_xlabel("Amplitude Factor"); ax.set_ylabel("Drive Frequency (GHz)")
-#     fig.colorbar(im, ax=ax)
-#     plt.show()
+# ── Search space: [Re(g₂), Im(g₂), Re(ε_d), Im(ε_d)] ──────
+BOUNDS = np.array([[0.1, 5.0], [-2.0, 2.0], [1.0, 20.0], [-5.0, 5.0]])
+X0     = np.array([1.0, 0.0, 4.0, 0.0])
+
+# ── Objective weights ────────────────────────────────────────
+ETA_GOAL = 320.0
+W_TX     = 1.0              # reward per µs of T_x
+W_TZ     = 1.0 / ETA_GOAL   # reward per µs of T_z  (normalised → T_x scale)
+LAMBDA   = 0.5              # penalty weight on relative bias deviation
+
+# ── Simulation defaults ─────────────────────────────────────
+N_TSAVE   = 100
+TZ_TFINAL = 200.0    # µs – phase-flip window
+TX_TFINAL = 1.0      # µs – bit-flip window
+
+# ── Runtime ──────────────────────────────────────────────────
+MAX_WORKERS     = None   # None → min(8, cpus//2)
+EARLY_PATIENCE  = 8
+EARLY_MIN_DELTA = 1e-3
 
 
-# ============================================================
-# Shared loss function (JIT-compiled + batched)
-# ============================================================
+# ═════════════════════════════════════════════════════════════
+#  Worker pool (lazy, shared)
+# ═════════════════════════════════════════════════════════════
 
-@jit
-def pi_pulse_loss_func(x):
-    """Return log10(1 + <sigma_z>) for a pi-pulse with given (amp_delta, freq_delta_MHz)."""
-    amp_factor_delta = x[0]
-    freq_delta_MHz = x[1]
+_pool = None
 
-    fq = 5  # [GHz]
-    H0 = 2 * jnp.pi * fq * dq.sigmaz() / 2
-    g_d = 2 * jnp.pi * 0.01  # [GHz]
+def _n_workers():
+    if MAX_WORKERS is not None:
+        return max(1, int(MAX_WORKERS))
+    return max(1, min(8, (os.cpu_count() or 2) // 2))
 
-    omega = 2 * jnp.pi * (fq + freq_delta_MHz * 1e-3)
-    f = lambda t: (1 + amp_factor_delta) * g_d * jnp.cos(omega * t)
-    Hx = dq.modulated(f, dq.sigmax())
-    Ht = H0 + Hx
+def _get_pool():
+    global _pool
+    if _pool is None:
+        _pool = ProcessPoolExecutor(max_workers=_n_workers())
+    return _pool
 
-    g_ket = dq.basis(2, 0)
-    ts = jnp.linspace(0, 50, 2)
-
-    results = dq.sesolve(Ht, g_ket, ts, options=dq.Options(progress_meter=False))
-
-    szt = dq.expect(dq.sigmaz(), results.states[-1])
-    return jnp.log10(1 + szt.real)
+atexit.register(lambda: _pool.shutdown(wait=True) if _pool else None)
 
 
-batched_pi_pulse_loss_func = jit(vmap(pi_pulse_loss_func))
+# ═════════════════════════════════════════════════════════════
+#  Exponential-decay fit
+# ═════════════════════════════════════════════════════════════
 
-
-# ============================================================
-# 1. CMA-ES Optimizer
-# ============================================================
-
-def run_cmaes(batch_size=12, n_epochs=80, seed=0):
-    """CMA-ES via the `cmaes` library."""
-    optimizer = SepCMA(
-        mean=np.array([0.5, 2.0]),
-        sigma=0.2,
-        bounds=np.array([[-1.0, 1.0], [-5.0, 5.0]]),
-        population_size=batch_size,
-        seed=seed,
-    )
-
-    reward_history = []
-    for epoch in range(n_epochs):
-        xs = jnp.array([optimizer.ask() for _ in range(optimizer.population_size)])
-        rewards = batched_pi_pulse_loss_func(xs)
-        solutions = [(xs[j], rewards[j]) for j in range(len(xs))]
-        optimizer.tell(solutions)
-        reward_history.append(float(jnp.mean(rewards)))
-        if epoch % 20 == 0:
-            print(f"  [CMA-ES]   Epoch {epoch:3d} | reward={reward_history[-1]:.4f}")
-
-    return np.array(reward_history)
-
-
-# ============================================================
-# 2. PPO (Proximal Policy Optimization) — lightweight custom
-#    implementation suited to this batch black-box setting
-# ============================================================
-
-def run_ppo(batch_size=12, n_epochs=80, seed=0):
-    """
-    Minimal PPO-style policy-gradient optimizer.
-
-    Parameterises a diagonal-Gaussian policy pi(a|theta) = N(mu, diag(sigma^2))
-    and updates mu, log_sigma with the clipped surrogate objective.  No value
-    baseline — reward whitening is used instead (works fine in <= 4-D).
-    """
-    rng = np.random.default_rng(seed)
-    min_sigma = 1e-3
-    log_sigma_bounds = (-7.0, 2.0)
-
-    # Policy parameters
-    mu = np.array([0.5, 2.0])           # mean
-    log_sigma = np.array([0.0, 0.0])    # log std-dev
-    lr_mu = 0.05
-    lr_sigma = 0.01
-    clip_eps = 0.2
-
-    reward_history = []
-
-    for epoch in range(n_epochs):
-        log_sigma = np.clip(log_sigma, *log_sigma_bounds)
-        sigma = np.maximum(np.exp(log_sigma), min_sigma)
-
-        # --- Collect batch (actions from current policy) ---
-        actions = rng.normal(mu, sigma, size=(batch_size, 2))
-        actions_clipped = np.clip(actions, [-1.0, -5.0], [1.0, 5.0])
-
-        xs = jnp.array(actions_clipped)
-        rewards_jax = batched_pi_pulse_loss_func(xs)
-        rewards_np = np.array(rewards_jax)
-
-        # We want to MINIMISE the loss (already negative for good pi-pulses).
-        # PPO maximises reward, so negate:
-        returns = -rewards_np
-
-        # Whiten returns for baseline-free advantage
-        adv = returns - returns.mean()
-        std = returns.std() + 1e-8
-        adv = adv / std
-
-        # Old log-probs under the sampling policy
-        old_logp = (
-            -0.5 * np.sum(((actions - mu) / sigma) ** 2, axis=1)
-            - np.sum(log_sigma)
-            - len(mu) * 0.5 * np.log(2 * np.pi)
+def _fit_decay(t, y):
+    """Fit y = A·exp(−t/τ) + C → return τ."""
+    t, y = np.asarray(t, float), np.asarray(y, float)
+    A0   = max(float(np.ptp(y)), 1e-6)
+    tau0 = max(float(np.ptp(t)) / 3, 1e-6)
+    try:
+        res = least_squares(
+            lambda p, t, y: p[0] * np.exp(-t / p[1]) + p[2] - y,
+            [A0, tau0, float(y.min())], args=(t, y),
+            bounds=([0, 1e-10, -np.inf], [np.inf, np.inf, np.inf]),
+            loss="soft_l1", f_scale=0.1,
         )
-
-        # --- PPO update (3 inner steps) ---
-        for _ in range(3):
-            log_sigma = np.clip(log_sigma, *log_sigma_bounds)
-            sigma_cur = np.maximum(np.exp(log_sigma), min_sigma)
-            new_logp = (
-                -0.5 * np.sum(((actions - mu) / sigma_cur) ** 2, axis=1)
-                - np.sum(log_sigma)
-                - len(mu) * 0.5 * np.log(2 * np.pi)
-            )
-
-            ratio = np.exp(new_logp - old_logp)
-            clipped_ratio = np.clip(ratio, 1 - clip_eps, 1 + clip_eps)
-            surrogate = np.minimum(ratio * adv, clipped_ratio * adv)
-
-            # Gradient w.r.t. mu
-            grad_mu = np.mean(
-                ((actions - mu) / sigma_cur ** 2) * surrogate[:, None],
-                axis=0,
-            )
-            # Gradient w.r.t. log_sigma
-            grad_log_sigma = np.mean(
-                (((actions - mu) ** 2 / sigma_cur ** 2) - 1) * surrogate[:, None],
-                axis=0,
-            )
-
-            mu = mu + lr_mu * grad_mu
-            log_sigma = log_sigma + lr_sigma * grad_log_sigma
-            mu = np.clip(mu, [-1.0, -5.0], [1.0, 5.0])
-            log_sigma = np.clip(log_sigma, *log_sigma_bounds)
-
-        reward_history.append(float(np.mean(rewards_np)))
-        if epoch % 20 == 0:
-            print(f"  [PPO]      Epoch {epoch:3d} | reward={reward_history[-1]:.4f}")
-
-    return np.array(reward_history)
+        return max(float(res.x[1]), 1e-10)
+    except Exception:
+        return tau0
 
 
-# ============================================================
-# 3. Bayesian Optimization (Gaussian-Process surrogate)
-# ============================================================
+# ═════════════════════════════════════════════════════════════
+#  Cat-qubit simulation
+# ═════════════════════════════════════════════════════════════
 
-def run_bayesopt(batch_size=12, n_epochs=80, seed=0):
-    """Bayesian optimisation via scikit-optimize's ask/tell interface."""
-    space = [
-        Real(-1.0, 1.0, name="amp_factor_delta"),
-        Real(-5.0, 5.0, name="freq_delta_MHz"),
-    ]
+def _mesolve(g2, eps_d, init, tfinal, n_tsave=N_TSAVE):
+    """Evolve cat qubit, return (tsave, ⟨X_L⟩, ⟨Z_L⟩)."""
+    a = dq.tensor(dq.destroy(NA), dq.eye(NB))
+    b = dq.tensor(dq.eye(NA), dq.destroy(NB))
 
-    opt = BayesOptimizer(
-        dimensions=space,
-        base_estimator="GP",
-        acq_func="EI",
-        n_initial_points=max(10, batch_size),
-        random_state=seed,
+    g2c, edc = complex(g2), complex(eps_d)
+    kappa2 = 4 * abs(g2c) ** 2 / KAPPA_B
+    eps2   = 2 * g2c * edc / KAPPA_B
+    alpha  = (float(np.sqrt(max(2 / kappa2 * (abs(eps2) - KAPPA_A / 4), 0.01)))
+              if kappa2 > 1e-12 else 0.5)
+
+    H = (np.conj(g2c) * a @ a @ b.dag()
+         + g2c * a.dag() @ a.dag() @ b
+         - edc * b.dag() - np.conj(edc) * b)
+
+    cat_p = dq.coherent(NA, alpha)
+    cat_m = dq.coherent(NA, -alpha)
+    basis = {
+        "+z": cat_p, "-z": cat_m,
+        "+x": (cat_p + cat_m) / jnp.sqrt(2),
+        "-x": (cat_p - cat_m) / jnp.sqrt(2),
+    }
+
+    parity = jnp.diag(jnp.array([(-1.0) ** n for n in range(NA)]))
+    X_L = dq.tensor(parity, jnp.eye(NB))
+    Z_L = dq.tensor(cat_p @ cat_p.dag() - cat_m @ cat_m.dag(), dq.eye(NB))
+
+    psi0  = dq.tensor(basis[init], dq.fock(NB, 0))
+    tsave = jnp.linspace(0, tfinal, n_tsave)
+
+    res = dq.mesolve(
+        H, [jnp.sqrt(KAPPA_B) * b, jnp.sqrt(KAPPA_A) * a],
+        psi0, tsave, exp_ops=[X_L, Z_L],
+        options=dq.Options(progress_meter=False),
     )
-
-    reward_history = []
-    for epoch in range(n_epochs):
-        candidates = opt.ask(n_points=batch_size)
-        xs = jnp.array(candidates)
-        rewards = batched_pi_pulse_loss_func(xs)
-
-        # skopt minimises, and our loss is already < 0 for good pulses
-        for c, r in zip(candidates, rewards.tolist()):
-            opt.tell(c, float(r))
-
-        reward_history.append(float(jnp.mean(rewards)))
-        if epoch % 20 == 0:
-            print(f"  [BayesOpt] Epoch {epoch:3d} | reward={reward_history[-1]:.4f}")
-
-    return np.array(reward_history)
+    return (np.array(res.tsave),
+            np.array(res.expects[0].real),
+            np.array(res.expects[1].real))
 
 
-# ============================================================
-# 4. Batch SPSA (Simultaneous Perturbation Stochastic Approx.)
-# ============================================================
+def measure_Tx_Tz(g2, eps_d):
+    """Two mesolve runs → (T_x, T_z) via exponential fits."""
+    tz_t, _,  sz = _mesolve(g2, eps_d, "+z", TZ_TFINAL)
+    tx_t, sx, _  = _mesolve(g2, eps_d, "+x", TX_TFINAL)
+    return _fit_decay(tx_t, sx), _fit_decay(tz_t, sz)
 
-class BatchSPSA:
-    """Batch SPSA with ask/tell interface for quantum control."""
 
-    def __init__(self, x0, bounds, a=0.15, c=0.1, A=10,
-                 alpha=0.602, gamma=0.101, seed=0):
-        self.x = np.array(x0, dtype=float)
-        self.bounds = np.array(bounds, dtype=float)
-        self.dim = len(x0)
-        self.a = a
-        self.c = c
-        self.A = A
-        self.alpha = alpha
-        self.gamma = gamma
-        self.k = 0
-        self._deltas = None
+# ═════════════════════════════════════════════════════════════
+#  Objective
+# ═════════════════════════════════════════════════════════════
+
+def cost(params):
+    """L = -(w_x·T_x + w_z·T_z) + λ·(η/η_goal − 1)²"""
+    g2  = complex(params[0], params[1])
+    epd = complex(params[2], params[3])
+    try:
+        Tx, Tz = measure_Tx_Tz(g2, epd)
+        Tx, Tz = max(Tx, 1e-6), max(Tz, 1e-6)
+        eta = Tz / Tx
+        return float(-(W_TX * Tx + W_TZ * Tz) + LAMBDA * (eta / ETA_GOAL - 1) ** 2)
+    except Exception as e:
+        print(f"  [!] sim failed: {e}")
+        return 1e6
+
+
+def _cost_worker(params):
+    """Pickle-friendly wrapper for ProcessPoolExecutor."""
+    return cost(params)
+
+
+def batch_cost(xs, parallel=True):
+    """Evaluate cost() over rows of xs, optionally in parallel."""
+    xs = np.asarray(xs, float)
+    if len(xs) == 0:
+        return np.array([])
+    if parallel and _n_workers() > 1:
+        return np.array(list(_get_pool().map(_cost_worker, xs)))
+    return np.array([cost(p) for p in xs])
+
+
+# ═════════════════════════════════════════════════════════════
+#  Early-stopping helper
+# ═════════════════════════════════════════════════════════════
+
+def _early(best, cur, ctr):
+    """Returns (new_best, new_counter, should_stop)."""
+    if cur < best - EARLY_MIN_DELTA:
+        return cur, 0, False
+    return best, ctr + 1, ctr + 1 >= EARLY_PATIENCE
+
+
+# ═════════════════════════════════════════════════════════════
+#  1. CMA-ES
+# ═════════════════════════════════════════════════════════════
+
+def run_cmaes(batch_size=6, n_epochs=30, seed=0, parallel=True):
+    opt = SepCMA(mean=X0.copy(), sigma=0.3, bounds=BOUNDS,
+                 population_size=batch_size, seed=seed)
+    hist, best, pat = [], np.inf, 0
+    for ep in range(n_epochs):
+        xs = np.array([opt.ask() for _ in range(opt.population_size)])
+        L  = batch_cost(xs, parallel)
+        opt.tell([(xs[j], L[j]) for j in range(len(xs))])
+        avg = float(np.mean(L))
+        hist.append(avg)
+        if ep % 5 == 0:
+            print(f"  [CMA-ES]   ep {ep:3d} | L={avg:.4f}")
+        best, pat, stop = _early(best, avg, pat)
+        if stop:
+            print(f"  [CMA-ES]   early stop @ ep {ep}")
+            break
+    return np.array(hist)
+
+
+# ═════════════════════════════════════════════════════════════
+#  2. PPO  (continuous, Gaussian policy)
+# ═════════════════════════════════════════════════════════════
+
+def run_ppo(batch_size=6, n_epochs=30, seed=0, parallel=True):
+    rng = np.random.default_rng(seed)
+    lo, hi, nd = BOUNDS[:, 0], BOUNDS[:, 1], len(X0)
+    mu, log_s = X0.copy(), np.zeros(nd)
+    lr_m, lr_s, clip = 0.05, 0.01, 0.2
+
+    hist, best, pat = [], np.inf, 0
+    for ep in range(n_epochs):
+        sig = np.maximum(np.exp(np.clip(log_s, -7, 2)), 1e-3)
+        acts = np.clip(rng.normal(mu, sig, (batch_size, nd)), lo, hi)
+        L = batch_cost(acts, parallel)
+
+        ret = -L
+        adv = (ret - ret.mean()) / (ret.std() + 1e-8)
+        old_lp = (-0.5 * np.sum(((acts - mu) / sig) ** 2, 1)
+                  - np.sum(log_s) - nd * 0.5 * np.log(2 * np.pi))
+
+        for _ in range(3):
+            sc = np.maximum(np.exp(np.clip(log_s, -7, 2)), 1e-3)
+            new_lp = (-0.5 * np.sum(((acts - mu) / sc) ** 2, 1)
+                      - np.sum(log_s) - nd * 0.5 * np.log(2 * np.pi))
+            r = np.exp(new_lp - old_lp)
+            surr = np.minimum(r * adv, np.clip(r, 1 - clip, 1 + clip) * adv)
+            mu    = np.clip(mu + lr_m * np.mean(((acts - mu) / sc ** 2) * surr[:, None], 0), lo, hi)
+            log_s = np.clip(log_s + lr_s * np.mean((((acts - mu) ** 2 / sc ** 2) - 1) * surr[:, None], 0), -7, 2)
+
+        avg = float(np.mean(L))
+        hist.append(avg)
+        if ep % 5 == 0:
+            print(f"  [PPO]      ep {ep:3d} | L={avg:.4f}")
+        best, pat, stop = _early(best, avg, pat)
+        if stop:
+            print(f"  [PPO]      early stop @ ep {ep}")
+            break
+    return np.array(hist)
+
+
+# ═════════════════════════════════════════════════════════════
+#  3. Bayesian Optimisation  (GP + Thompson sampling)
+# ═════════════════════════════════════════════════════════════
+
+def run_bayesopt(batch_size=6, n_epochs=30, seed=0, parallel=True):
+    rng = np.random.default_rng(seed)
+    nd = len(X0)
+    gp = GaussianProcessRegressor(
+        kernel=ConstantKernel(1.0) * Matern(length_scale=np.ones(nd), nu=2.5),
+        alpha=1e-4, normalize_y=True, n_restarts_optimizer=2, random_state=seed,
+    )
+    X_all, y_all = np.empty((0, nd)), np.empty(0)
+    n_rand = max(10, batch_size)
+
+    hist, best, pat = [], np.inf, 0
+    for ep in range(n_epochs):
+        if len(X_all) < n_rand:
+            cands = rng.uniform(BOUNDS[:, 0], BOUNDS[:, 1], (batch_size, nd))
+        else:
+            pool_x = rng.uniform(BOUNDS[:, 0], BOUNDS[:, 1], (500, nd))
+            samps  = gp.sample_y(pool_x, n_samples=batch_size,
+                                 random_state=rng.integers(1 << 31))
+            cands = np.array([pool_x[np.argmin(samps[:, i])] for i in range(batch_size)])
+
+        L = batch_cost(cands, parallel)
+        X_all = np.vstack([X_all, cands])
+        y_all = np.concatenate([y_all, L])
+        gp.fit(X_all, y_all)
+
+        avg = float(np.mean(L))
+        hist.append(avg)
+        if ep % 5 == 0:
+            print(f"  [BayesOpt] ep {ep:3d} | L={avg:.4f}")
+        best, pat, stop = _early(best, avg, pat)
+        if stop:
+            print(f"  [BayesOpt] early stop @ ep {ep}")
+            break
+    return np.array(hist)
+
+
+# ═════════════════════════════════════════════════════════════
+#  4. Batch SPSA
+# ═════════════════════════════════════════════════════════════
+
+class _SPSA:
+    def __init__(self, x0, bounds, a=0.15, c=0.1, A=10, seed=0):
+        self.x, self.bounds = x0.copy(), bounds
+        self.a, self.c, self.A, self.k = a, c, A, 0
+        self._d = None
         self.rng = np.random.default_rng(seed)
 
-    def ask(self, batch_size=4):
-        """Return 2*batch_size candidates (paired +/- perturbations)."""
-        ck = self.c / (self.k + 1) ** self.gamma
-        self._deltas = [
-            self.rng.choice([-1.0, 1.0], size=self.dim)
-            for _ in range(batch_size)
-        ]
-        candidates = []
-        for delta in self._deltas:
-            x_plus = np.clip(self.x + ck * delta, self.bounds[:, 0], self.bounds[:, 1])
-            x_minus = np.clip(self.x - ck * delta, self.bounds[:, 0], self.bounds[:, 1])
-            candidates.append(x_plus)
-            candidates.append(x_minus)
-        return candidates
+    def ask(self, n_pairs=3):
+        ck = self.c / (self.k + 1) ** 0.101
+        self._d = [self.rng.choice([-1., 1.], len(self.x)) for _ in range(n_pairs)]
+        out = []
+        for d in self._d:
+            out.append(np.clip(self.x + ck * d, self.bounds[:, 0], self.bounds[:, 1]))
+            out.append(np.clip(self.x - ck * d, self.bounds[:, 0], self.bounds[:, 1]))
+        return out
 
     def tell(self, losses):
-        """Update from paired evaluations: losses[2i] = f(x+), losses[2i+1] = f(x-)."""
-        ak = self.a / (self.k + 1 + self.A) ** self.alpha
-        ck = self.c / (self.k + 1) ** self.gamma
-
-        g_hat = np.zeros(self.dim)
-        n_pairs = len(losses) // 2
-        for i in range(n_pairs):
-            g_hat += (losses[2 * i] - losses[2 * i + 1]) / (2 * ck * self._deltas[i])
-        g_hat /= n_pairs
-
-        self.x = self.x - ak * g_hat
-        self.x = np.clip(self.x, self.bounds[:, 0], self.bounds[:, 1])
+        ak = self.a / (self.k + 1 + self.A) ** 0.602
+        ck = self.c / (self.k + 1) ** 0.101
+        g = np.zeros_like(self.x)
+        for i in range(len(losses) // 2):
+            g += (losses[2 * i] - losses[2 * i + 1]) / (2 * ck * self._d[i])
+        g /= max(len(losses) // 2, 1)
+        self.x = np.clip(self.x - ak * g, self.bounds[:, 0], self.bounds[:, 1])
         self.k += 1
 
 
-def run_spsa(batch_size=12, n_epochs=80, seed=0):
-    """Batch-SPSA optimizer (zero extra dependencies)."""
+def run_spsa(batch_size=6, n_epochs=30, seed=0, parallel=True):
     n_pairs = max(1, batch_size // 2)
+    opt = _SPSA(X0, BOUNDS, seed=seed)
 
-    opt = BatchSPSA(
-        x0=np.array([0.5, 2.0]),
-        bounds=np.array([[-1.0, 1.0], [-5.0, 5.0]]),
-        a=0.15, c=0.1, A=10,
-        seed=seed,
-    )
-
-    reward_history = []
-    for epoch in range(n_epochs):
-        candidates = opt.ask(batch_size=n_pairs)
-        xs = jnp.array(candidates)
-        rewards = batched_pi_pulse_loss_func(xs)
-        opt.tell(rewards.tolist())
-        reward_history.append(float(jnp.mean(rewards)))
-        if epoch % 20 == 0:
-            print(f"  [SPSA]     Epoch {epoch:3d} | reward={reward_history[-1]:.4f}")
-
-    return np.array(reward_history)
+    hist, best, pat = [], np.inf, 0
+    for ep in range(n_epochs):
+        cands = opt.ask(n_pairs)
+        L = batch_cost(np.array(cands), parallel)
+        opt.tell(L.tolist())
+        avg = float(np.mean(L))
+        hist.append(avg)
+        if ep % 5 == 0:
+            print(f"  [SPSA]     ep {ep:3d} | L={avg:.4f}")
+        best, pat, stop = _early(best, avg, pat)
+        if stop:
+            print(f"  [SPSA]     early stop @ ep {ep}")
+            break
+    return np.array(hist)
 
 
-# ============================================================
-# Commented-out code: drift-based optimization (not needed for
-# this optimizer comparison)
-# ============================================================
+# ═════════════════════════════════════════════════════════════
+#  Plot
+# ═════════════════════════════════════════════════════════════
 
-# @jit
-# def pi_pulse_loss_func_under_drift(p):
-#     num_knobs = 2
-#     amp_factor_delta = p[0]
-#     freq_delta_MHz = p[1]
-#     amp_factor_delta_drift = p[num_knobs + 0]
-#     freq_delta_MHz_drift = p[num_knobs + 1]
-#     fq = 5
-#     H0 = 2 * jnp.pi * fq * dq.sigmaz() / 2
-#     g_d = 2 * jnp.pi * 0.01
-#     omega = 2 * jnp.pi * (fq + freq_delta_MHz*1e-3 - freq_delta_MHz_drift*1e-3)
-#     f = lambda t: (1+amp_factor_delta-amp_factor_delta_drift)*g_d*jnp.cos(omega*t)
-#     Hx = dq.modulated(f, dq.sigmax())
-#     Ht = H0 + Hx
-#     g_ket = dq.basis(2, 0)
-#     ts = jnp.linspace(0, 50, 2)
-#     results = dq.sesolve(Ht, g_ket, ts, options=dq.Options(progress_meter=False))
-#     szt = dq.expect(dq.sigmaz(), results.states[-1])
-#     return jnp.log10(1 + szt.real)
-#
-# batched_pi_pulse_loss_func_under_drift = jit(vmap(pi_pulse_loss_func_under_drift))
-#
-# def run_optimization_under_drift(batch_size=12, n_epochs=200, seed=0):
-#     ...
+_COLORS = {"CMA-ES": "tab:blue", "PPO": "tab:orange",
+           "BayesOpt": "tab:green", "SPSA": "tab:red"}
 
-
-# ============================================================
-# Comparison plot
-# ============================================================
-
-def plot_comparison(results: dict, n_epochs: int):
-    """Plot all optimizers' reward curves on a single figure."""
-    epochs = np.arange(n_epochs)
-
+def plot_comparison(results, n_epochs):
     plt.figure(figsize=(9, 5))
-    styles = {
-        "CMA-ES":   dict(color="tab:blue",   linewidth=2),
-        "PPO":      dict(color="tab:orange",  linewidth=2),
-        "BayesOpt": dict(color="tab:green",   linewidth=2),
-        "SPSA":     dict(color="tab:red",     linewidth=2),
-    }
-
-    for name, rewards in results.items():
-        style = styles.get(name, {})
-        plt.plot(epochs, rewards, label=name, **style)
-
-    plt.xlabel("Epoch", fontsize=12)
-    plt.ylabel(r"Reward  ($\log_{10}$ infidelity)", fontsize=12)
-    plt.title("Optimizer Comparison — Pi-Pulse Calibration", fontsize=14)
-    plt.grid(True, alpha=0.3)
-    plt.legend(fontsize=11)
+    for name, h in results.items():
+        plt.plot(np.arange(len(h)), h, label=name,
+                 color=_COLORS.get(name), lw=2)
+    plt.xlim(0, n_epochs - 1)
+    plt.xlabel("Epoch")
+    plt.ylabel(r"$L$  (lower $\rightarrow$ better)")
+    plt.title("Optimizer Comparison — Cat-Qubit Calibration\n"
+              r"$L = -(w_x T_x + w_z T_z) + \lambda\,(\eta/\eta_{\mathrm{goal}} - 1)^2$")
+    plt.grid(alpha=0.3)
+    plt.legend()
     plt.tight_layout()
     plt.show()
 
 
-# ============================================================
-# Main
-# ============================================================
+# ═════════════════════════════════════════════════════════════
+#  Main
+# ═════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    BATCH_SIZE = 12
-    N_EPOCHS = 80
-    SEED = 0
+    BS, EPOCHS, SEED, PAR = 6, 30, 0, True
+    print(f"workers={_n_workers()}  parallel={PAR}")
 
+    runners = [
+        ("CMA-ES",   run_cmaes),
+        ("PPO",      run_ppo),
+        ("BayesOpt", run_bayesopt),
+        ("SPSA",     run_spsa),
+    ]
     results = {}
+    for i, (name, fn) in enumerate(runners, 1):
+        print(f"\n{'=' * 50}\n{i}/4  {name}\n{'=' * 50}")
+        results[name] = fn(BS, EPOCHS, SEED, PAR)
 
-    print("=" * 55)
-    print("1 / 4  CMA-ES")
-    print("=" * 55)
-    results["CMA-ES"] = run_cmaes(BATCH_SIZE, N_EPOCHS, SEED)
-
-    print()
-    print("=" * 55)
-    print("2 / 4  PPO")
-    print("=" * 55)
-    results["PPO"] = run_ppo(BATCH_SIZE, N_EPOCHS, SEED)
-
-    print()
-    print("=" * 55)
-    print("3 / 4  Bayesian Optimization")
-    print("=" * 55)
-    results["BayesOpt"] = run_bayesopt(BATCH_SIZE, N_EPOCHS, SEED)
-
-    print()
-    print("=" * 55)
-    print("4 / 4  Batch SPSA")
-    print("=" * 55)
-    results["SPSA"] = run_spsa(BATCH_SIZE, N_EPOCHS, SEED)
-
-    print()
-    print("=" * 55)
-    print("Plotting comparison ...")
-    print("=" * 55)
-    plot_comparison(results, N_EPOCHS)
+    print(f"\n{'=' * 50}\nPlotting ...\n{'=' * 50}")
+    plot_comparison(results, EPOCHS)
