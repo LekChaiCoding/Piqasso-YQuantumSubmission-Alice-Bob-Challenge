@@ -50,7 +50,7 @@ BETA_END     = 12.0
 PARAM_BOUNDS = np.array([
     [0.0,8.0],   # eps_d_real
     [0.0,8.0],   # eps_d_im
-    [0.0,8.0],   # g2_re
+    [-1.0,1.0],   # g2_re
     [-1.0,1.0],   # g2_im
     [-1.0,1.0]    # delta
 ], dtype=np.float64)

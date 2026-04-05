@@ -134,13 +134,13 @@ def compute_vals(eps_d_real: float, eps_d_im: float, g2_re: float, g2_im: float,
 print(compute_vals(4,0,1,0,-1.0))
 
 
-from pathlib import Path
+#from pathlib import Path
 
-res = evolve_state("-z", 400, 1.9168,2.4595,0.3250,0.0388,-0.1681)
-storage_states = dq.ptrace(res.states, 0)
+#res = evolve_state("-z", 400, 1.9168,2.4595,0.3250,0.0388,-0.1681)
+#storage_states = dq.ptrace(res.states, 0)
 
-gif = dq.plot.wigner_gif(storage_states)
+#gif = dq.plot.wigner_gif(storage_states)
 
-output_path = Path("crescent_wigner.gif")
-output_path.write_bytes(gif.data)
-print(f"Saved {output_path.resolve()}")
+#output_path = Path("crescent_wigner.gif")
+#output_path.write_bytes(gif.data)
+#print(f"Saved {output_path.resolve()}")

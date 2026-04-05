@@ -2,6 +2,20 @@
 
 This folder holds the team’s exploratory notebooks, scripts, figures, and PPO tooling for the Alice & Bob cat-qubit challenge.
 
+## Acknowledgments and licenses
+
+We used Alice & Bob’s challenge materials and their `dynamiqs` package as part of this submission work.
+
+For a dedicated attribution and license inventory, see:
+
+- `team-piqasso/licenses/ACKNOWLEDGMENTS.md`
+- `team-piqasso/licenses/THIRD_PARTY_LICENSES.md`
+
+Important:
+
+- This repository snapshot did not include a separate upstream license file for the bundled challenge materials under `challenge/`.
+- Because of that, the new `licenses/` folder preserves attribution to Alice & Bob and records the identifiable third-party licenses used by `team-piqasso`, while avoiding unsupported claims about a missing upstream license file.
+
 ## Folder layout
 
 ```
@@ -18,6 +32,10 @@ team-piqasso/
 │   ├── optimizer_progress.png, optimized_Tx_Tz_combined.png, …
 │   ├── ppo_results/                   ← PPO training curves and decay snapshots
 │   └── Alex/outputs/ppo_results/      ← another PPO results export set
+├── licenses/                          ← acknowledgments and third-party license inventory
+│   ├── README.md
+│   ├── ACKNOWLEDGMENTS.md
+│   └── THIRD_PARTY_LICENSES.md
 ├── Notebooks/                         ← extra topic notebooks
 │   ├── AddZ.ipynb
 │   ├── Detuning.ipynb
