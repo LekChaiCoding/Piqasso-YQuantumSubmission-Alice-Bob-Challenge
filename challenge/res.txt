@@ -1,0 +1,148 @@
+d_tls = 0.5:
+OPTIMIZATION COMPLETE
+  Best reward : +3.933114
+  Tz          : 44.8096
+  Tx          : 0.136905
+  Tz/Tx       : 327.30  (target 320,  |err|=2.28%)
+  eps_d_real  : 3.8810
+  eps_d_im    : 3.8415
+  g2_re       : 0.8669
+  g2_im       : -0.8438
+
+d_tls = 0.25:
+  Best reward : +3.983035
+  Tz          : 46.8863
+  Tx          : 0.143624
+  Tz/Tx       : 326.45  (target 320,  |err|=2.02%)
+  eps_d_real  : 3.4704
+  eps_d_im    : 3.8276
+  g2_re       : 0.8365
+  g2_im       : -0.8641
+
+d_tls = 0.75:
+OPTIMIZATION COMPLETE
+  Best reward : +3.864144
+  Tz          : 41.5399
+  Tx          : 0.127128
+  Tz/Tx       : 326.76  (target 320,  |err|=2.11%)
+  eps_d_real  : 4.3427
+  eps_d_im    : 3.8769
+  g2_re       : 0.8447
+  g2_im       : -0.8478
+
+d_tls = 1.0:
+OPTIMIZATION COMPLETE
+  Best reward : +3.782976
+  Tz          : 39.1777
+  Tx          : 0.120485
+  Tz/Tx       : 325.17  (target 320,  |err|=1.61%)
+  eps_d_real  : 4.5193
+  eps_d_im    : 4.3683
+  g2_re       : 0.8718
+  g2_im       : -0.8933
+
+  0.0
+  OPTIMIZATION COMPLETE
+  Best reward : +4.775026
+  Tz          : 96.8746
+  Tx          : 0.293105
+  Tz/Tx       : 330.51  (target 320,  |err|=3.28%)
+  eps_d_real  : 3.4932
+  eps_d_im    : 0.7652
+  g2_re       : 0.0395
+  g2_im       : 0.1593
+
+  0.45:
+  OPTIMIZATION COMPLETE
+  Best reward : +3.945603
+  Tz          : 45.0595
+  Tx          : 0.137191
+  Tz/Tx       : 328.44  (target 320,  |err|=2.64%)
+  eps_d_real  : 3.7895
+  eps_d_im    : 3.8217
+  g2_re       : 0.8385
+  g2_im       : -0.8437
+
+  With Moon:
+
+  d_tls = 0.25:
+  OPTIMIZATION COMPLETE
+  Best reward : +4.163829
+  Tz          : 56.2788
+  Tx          : 0.174459
+  Tz/Tx       : 322.59  (target 320,  |err|=0.81%)
+  eps_d_real  : 3.3196
+  eps_d_im    : 2.8381
+  g2_re       : 0.9050
+  g2_im       : -0.7729
+  delta       : -0.2038
+
+  d_lts = 0.5:
+  Best reward : +4.095385
+  Tz          : 52.0726
+  Tx          : 0.159888
+  Tz/Tx       : 325.68  (target 320,  |err|=1.78%)
+  eps_d_real  : 3.4607
+  eps_d_im    : 3.2467
+  g2_re       : 0.8457
+  g2_im       : -0.8207
+  delta       : -0.1580
+  
+  '''OPTIMIZATION COMPLETE
+  Best reward : +4.623867
+  Tz          : 90.2351
+  Tx          : 0.311230
+  Tz/Tx       : 289.93  (target 320,  |err|=9.40%)
+  eps_d_real  : 6.4275
+  eps_d_im    : 0.3670
+  g2_re       : -0.0434
+  g2_im       : 0.2086
+  delta       : -0.4757'''
+
+  d_lts = 0.75
+  OPTIMIZATION COMPLETE
+  Best reward : +4.005021
+  Tz          : 47.8494
+  Tx          : 0.147041
+  Tz/Tx       : 325.42  (target 320,  |err|=1.69%)
+  eps_d_real  : 3.5961
+  eps_d_im    : 3.7666
+  g2_re       : 0.8324
+  g2_im       : -0.8635
+  delta       : -0.1139
+
+  d_lts = 1.0:
+  OPTIMIZATION COMPLETE
+  Best reward : +3.896896
+  Tz          : 44.0028
+  Tx          : 0.134694
+  Tz/Tx       : 326.69  (target 320,  |err|=2.09%)
+  eps_d_real  : 4.5989
+  eps_d_im    : 3.3715
+  g2_re       : 0.8324
+  g2_im       : -0.9094
+  delta       : -0.0746
+
+  d_lts = 0.45:
+  OPTIMIZATION COMPLETE
+  Best reward : +4.110341
+  Tz          : 52.1843
+  Tx          : 0.162165
+  Tz/Tx       : 321.80  (target 320,  |err|=0.56%)
+  eps_d_real  : 3.4204
+  eps_d_im    : 3.1332
+  g2_re       : 0.8526
+  g2_im       : -0.7893
+  delta       : -0.1666
+
+d_lts = 0.55:
+OPTIMIZATION COMPLETE
+  Best reward : +4.077465
+  Tz          : 51.5466
+  Tx          : 0.158163
+  Tz/Tx       : 325.91  (target 320,  |err|=1.85%)
+  eps_d_real  : 3.5182
+  eps_d_im    : 3.3486
+  g2_re       : 0.8491
+  g2_im       : -0.8469
+  delta       : -0.1748

@@ -38,7 +38,11 @@ matplotlib.use("Agg")          # no display needed — saves to file
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 
+<<<<<<< HEAD:team-piqasso/Scripts/PPO_optimizer.py
 from Scratch_copy import compute_vals
+=======
+from Scratch_nontuneable import compute_vals
+>>>>>>> origin/batu:challenge/PPO_optimizer.py
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 RATIO_TARGET = 320.0
@@ -52,7 +56,10 @@ PARAM_BOUNDS = np.array([
     [0.0,8.0],   # eps_d_im
     [-1.0,1.0],   # g2_re
     [-1.0,1.0],   # g2_im
+<<<<<<< HEAD:team-piqasso/Scripts/PPO_optimizer.py
     [-1.0,1.0],   # delta_d
+=======
+>>>>>>> origin/batu:challenge/PPO_optimizer.py
 ], dtype=np.float64)
 PARAM_DIM  = PARAM_BOUNDS.shape[0]
 PARAM_SPAN = PARAM_BOUNDS[:, 1] - PARAM_BOUNDS[:, 0]
@@ -475,7 +482,7 @@ class PPO:
     def train(
         self,
         env:           QuantumEnv,
-        n_iterations:  int = 30,
+        n_iterations:  int = 50,
         rollout_steps: int = 32,
         n_verify:      int = 3,    # real sims per main-phase iter (targeted)
         plot_path:     str = "ppo_progress.png",
@@ -734,7 +741,7 @@ def _fmt_info(info: dict) -> str:
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    N_ITER = 50
+    N_ITER = 30
 
     env = QuantumEnv(
         steps_per_episode = 10,
