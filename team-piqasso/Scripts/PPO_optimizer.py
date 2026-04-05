@@ -21,7 +21,7 @@ Ratio stability:
 Reward:
   r = 0.5·(log Tz + log(320·Tx))  −  β · (log(Tz/Tx) − log 320)²
 
-Control parameters: eps_d_real, eps_d_im, g2_re, g2_im  (MHz)
+Control parameters: eps_d_real, eps_d_im, g2_re, g2_im, delta_d  (MHz / dimensionless detuning on a†a)
 """
 
 import sys
@@ -38,7 +38,7 @@ matplotlib.use("Agg")          # no display needed — saves to file
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 
-from Scratch import compute_vals
+from Scratch_copy import compute_vals
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 RATIO_TARGET = 320.0
@@ -50,13 +50,15 @@ BETA_END     = 12.0
 PARAM_BOUNDS = np.array([
     [0.0,8.0],   # eps_d_real
     [0.0,8.0],   # eps_d_im
-    [0.0,8.0],   # g2_re
-    [0.0,8.0],   # g2_im
+    [-1.0,1.0],   # g2_re
+    [-1.0,1.0],   # g2_im
+    [-1.0,1.0],   # delta_d
 ], dtype=np.float64)
 PARAM_DIM  = PARAM_BOUNDS.shape[0]
 PARAM_SPAN = PARAM_BOUNDS[:, 1] - PARAM_BOUNDS[:, 0]
 
-INIT_PARAMS = np.array([4.0, 0.0, 1.0, 0.0])
+# Order matches PARAM_BOUNDS: eps_d_re, eps_d_im, g2_re, g2_im, delta_d
+INIT_PARAMS = np.array([4.0, 0.0, 1.0, 0.0, 0.0])
 
 # Augmented state: 4 params + log_ratio_err + log_tz_norm + log_tx_norm
 STATE_DIM = PARAM_DIM + 3

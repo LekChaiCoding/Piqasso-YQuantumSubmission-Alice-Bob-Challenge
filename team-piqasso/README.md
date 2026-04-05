@@ -36,6 +36,8 @@ team-piqasso/
 
 The repository root also includes **`cat_size_proof.py`** (not inside `team-piqasso/`): QuTiP steady-state / Wigner check that **ε_d / g₂** sets cat size; figures often live under **`team-piqasso/Graphs/`**.
 
+Another repo utility now lives under **`challenge/build_crescent_wigner_gifs.py`**: it reads optimized parameters from **`results.txt`**, treats the saved **`delta`** entry as the crescent-control **`lam`**, reruns the storage-buffer evolution, and writes Wigner-function GIFs for the storage mode under **`challenge/crescent_wigner_gifs/`**.
+
 ## What the main pieces do
 
 ### Notebooks (top level)
@@ -109,6 +111,10 @@ The repository root also includes **`cat_size_proof.py`** (not inside `team-piqa
 5. **Cat size proof (repo root)**  
    `python cat_size_proof.py`  
    Point the save path inside the script to e.g. **`team-piqasso/Graphs/cat_size_proof.png`** if your environment does not use the default output paths.
+
+6. **Crescent-cat Wigner GIFs**  
+   `python challenge/build_crescent_wigner_gifs.py`  
+   This reads **`results.txt`** and generates GIFs plus a small **`manifest.csv`** in **`challenge/crescent_wigner_gifs/`**. Use flags like **`--max-results 1`**, **`--tfinal 10`**, or **`--initial-state +x`** if you want a faster preview or a different logical start state.
 
 If JAX reports **`CudaDevice`**, the heavy simulations can use the GPU; **`CpuDevice`** means CPU-only (still correct, slower).
 

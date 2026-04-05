@@ -11,7 +11,7 @@ from scipy.optimize import curve_fit
 from scipy.optimize import least_squares
 
 
-def evolve_state(initial_state, tfinal, eps_d_real: float, eps_d_im: float, g2_re: float, g2_im: float, delta_d: float):
+def evolve_state(initial_state, tfinal, eps_d_real: float, eps_d_im: float, g2_re: float, g2_im: float):
     na = 15 # Hilbert space dimension
     nb = 5
     a = dq.tensor(dq.destroy(na), dq.eye(nb)) # annihilaiton operator
@@ -26,7 +26,7 @@ def evolve_state(initial_state, tfinal, eps_d_real: float, eps_d_im: float, g2_r
     kappa_2 = 4 * jnp.abs(g_2)**2/kappa_b
     alpha_estimate = jnp.sqrt(2/kappa_2 * (eps_2 - kappa_a/4))
 
-    H = jnp.conj(g_2) * a @ a @ b.dag() + g_2 * a.dag() @ a.dag() @ b - eps_d * b.dag() - jnp.conj(eps_d) * b + 1.5*a.dag()@a + delta_d*a.dag()@a
+    H = jnp.conj(g_2) * a @ a @ b.dag() + g_2 * a.dag() @ a.dag() @ b - eps_d * b.dag() - jnp.conj(eps_d) * b 
 
     loss_b = jnp.sqrt(kappa_b) * b
     loss_a = jnp.sqrt(kappa_a) * a

@@ -1,0 +1,55 @@
+PARAM_BOUNDS = np.array([
+    [0.0,8.0],   # eps_d_real
+    [0.0,8.0],   # eps_d_im
+    [-2.0,2.0],   # g2_re
+    [-1.0,1.0],   # g2_im
+    [-1.0,1.0]    # delta
+], dtype=np.float64)
+OPTIMIZATION COMPLETE
+  Best reward : +4.072965
+  Tz          : 52.7255
+  Tx          : 0.181929
+  Tz/Tx       : 289.81  (target 320,  |err|=9.43%)
+  eps_d_real  : 3.1920
+  eps_d_im    : 2.8624
+  g2_re       : 0.6419
+  g2_im       : -0.9245
+  delta       : -0.8835
+
+--------------------------------------
+  PARAM_BOUNDS = np.array([
+    [0.0,8.0],   # eps_d_real
+    [0.0,8.0],   # eps_d_im
+    [0.0,8.0],   # g2_re
+    [-1.0,1.0],   # g2_im
+    [-1.0,1.0]    # delta
+], dtype=np.float64)
+
+OPTIMIZATION COMPLETE
+  Best reward : +4.266037
+  Tz          : 78.5996
+  Tx          : 0.198087
+  Tz/Tx       : 396.79  (target 320,  |err|=24.00%)
+  eps_d_real  : 4.3091
+  eps_d_im    : 2.1501
+  g2_re       : 0.7829
+  g2_im       : -0.7286
+  delta       : 0.2940
+  ----------------------------------------------
+  PARAM_BOUNDS = np.array
+    [0.0,8.0],   # eps_d_real
+    [0.0,8.0],   # eps_d_im
+    [-1.0,1.0],   # g2_re
+    [-1.0,1.0],   # g2_im
+    [-1.0,1.0]    # delta
+
+  OPTIMIZATION COMPLETE
+  Best reward : +5.626529
+  Tz          : 224.5996
+  Tx          : 0.665702
+  Tz/Tx       : 337.39  (target 320,  |err|=5.43%)
+  eps_d_real  : 4.1727
+  eps_d_im    : 4.3427
+  g2_re       : -0.1420
+  g2_im       : 0.3530
+  delta       : -0.1823
