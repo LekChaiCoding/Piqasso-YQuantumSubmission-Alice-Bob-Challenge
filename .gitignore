@@ -208,3 +208,15 @@ marimo/_lsp/
 __marimo__/
 
 sandbox/*
+
+# Generated output files (plots, data dumps) -- do not commit
+*.npz
+HEvo_*.png
+optimizer_progress.png
+Tx_decay_comparison.png
+initial_Tx_Tz_combined.png
+optimized_Tx_Tz_combined.png
+custom_objective_landscape.png
+fitting_comparison.png
+team-piqasso/*.png
+landscape_data.npz
