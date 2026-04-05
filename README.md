@@ -2,6 +2,7 @@
 
 Challenge materials are in `challenge/`.
 
+<<<<<<< HEAD
 ## Team notebook
 
 A standalone exploratory notebook is available at `team-piqasso/four-parameter-optimizer.ipynb`.
@@ -38,3 +39,6 @@ After installation:
 - The notebook metadata shows it was originally run in Python `3.11.15`.
 - This repository is now configured to use a local Python `3.11` environment at `.venv311`.
 - The direct notebook dependencies are listed in `requirements.txt`.
+=======
+Branch for Batu.
+>>>>>>> batu
