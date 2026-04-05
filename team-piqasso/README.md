@@ -1,201 +1,117 @@
 # Team Piqasso Submission Notes
 
-This folder contains standalone exploratory tooling:
+This folder holds the team’s exploratory notebooks, scripts, figures, and PPO tooling for the Alice & Bob cat-qubit challenge.
 
-- `four-parameter-optimizer.ipynb`
-- `rl_refinement_notebook.ipynb`
-- `ppo_cat_gpu_search.py`
-- `ppo_batched_parallel_search.py`
-- `parity_decay_optimizer.py`
+## Folder layout
 
-## What it does
+```
+team-piqasso/
+├── README.md                          ← this file
+├── PiqassoNotebook.ipynb              ← main submission narrative (CMA-ES, PPO, cat-size proof)
+├── four-parameter-optimizer.ipynb     ← CMA-ES-style loop over Re/Im(g₂), Re/Im(ε_d)
+├── rl_refinement_notebook.ipynb       ← PPO refinement over the same four controls
+├── ppo_batched_parallel_search.py     ← modular PPO runner (surrogate or Lindblad backend, plots)
+├── Graphs/                            ← figures and PPO run exports
+│   ├── README.md
+│   ├── requirements.txt               ← extra graph-related deps (if used)
+│   ├── cat_size_proof.png             ← from repo-root `cat_size_proof.py` (QuTiP proof)
+│   ├── optimizer_progress.png, optimized_Tx_Tz_combined.png, …
+│   ├── ppo_results/                   ← PPO training curves and decay snapshots
+│   └── Alex/outputs/ppo_results/      ← another PPO results export set
+├── Notebooks/                         ← extra topic notebooks
+│   ├── AddZ.ipynb
+│   ├── Detuning.ipynb
+│   ├── Drift.ipynb
+│   └── notebook.ipynb
+├── outputs/ppo_results/               ← default-style PPO plot output folder (when used)
+└── Scripts/                           ← Python utilities and experiments
+    ├── cmas.py                        ← CMA-ES / optimization driver used with notebooks
+    ├── ppo_batched_parallel_search.py ← copy/variant of root PPO script (prefer root file)
+    ├── Tx_Tz_optimization.py
+    ├── optimize_cat.py, optimize_cat_fast.py, optimize_cat_colab.py, optimize_cat_old.py
+    ├── pi_pulse_pipeline.py, pi_pulse_pipeline_old.py
+    ├── alpha_optimizer.py, parameter_analysis.py, leon.py, Piqasso.py
+    └── …
+```
 
-The notebook builds a simple optimization loop for the four real control knobs behind the complex cat-stabilization parameters:
+The repository root also includes **`cat_size_proof.py`** (not inside `team-piqasso/`): QuTiP steady-state / Wigner check that **ε_d / g₂** sets cat size; figures often live under **`team-piqasso/Graphs/`**.
 
-- `Re(g_2)`
-- `Im(g_2)`
-- `Re(epsilon_d)`
-- `Im(epsilon_d)`
+## What the main pieces do
 
-It uses `dynamiqs` to simulate logical decay, estimates proxy lifetimes `T_X` and `T_Z`, and then applies CMA-ES to improve a reward that balances:
+### Notebooks (top level)
 
-- longer lifetimes
-- a target bias `T_Z / T_X`
+- **`four-parameter-optimizer.ipynb`** — Optimizes the four real controls behind **g₂** and **ε_d** using **`dynamiqs`** simulations, estimates **T_X**, **T_Z**, and bias **η = T_Z / T_X**, and uses a CMA-ES-style search (see **`Scripts/cmas.py`**) to improve a lifetime / bias objective.
+- **`rl_refinement_notebook.ipynb`** — PPO-style refinement on the same physical controls, Gaussian policy, clipped updates, replay, aligned with the challenge Hamiltonian when using the Lindblad path.
+- **`PiqassoNotebook.ipynb`** — Write-up for the submission: guiding question, CMA-ES vs PPO comparison, link to **`cat_size_proof`**, and figures under **`Graphs/`**.
 
-The RL refinement notebook is a follow-on layer for the same controls:
+### `ppo_batched_parallel_search.py` (this folder)
 
-- it starts from a physics-informed seed taken from the tutorial notebook defaults
-- it uses PPO to search directly over the physical `g_2` and `epsilon_d` controls instead of depending on another optimizer
-- it uses a compact Gaussian policy, PPO-style clipped updates, entropy regularization, and a replay buffer
-- it keeps the cat-qubit control variables in the same physical form used in the challenge notebooks: `g_2` and `epsilon_d`
-- it evaluates candidates with the same storage-buffer Hamiltonian and loss channels used in the challenge resources notebook
-- it extracts `T_X` and `T_Z` from logical decay curves and uses those directly inside the PPO reward
+- Same four-parameter search space, **physics-informed seed**, **`SimulatorBackend`** protocol:
+  - **`SurrogateBackend`** — fast analytic metrics.
+  - **`LindbladBackend`** — full storage–buffer **`dynamiqs.mesolve`**, exponential fits to logical observables.
+- Reward (JIT): **0.5 log(T_X T_Z) − λ_η (log η − log η_target)²**, with a **hard** gate on **η** outside **[η_min, η_max]** by default.
+- **Replay buffer** mixes past transitions with the fresh batch for PPO updates.
+- Writes training and decay figures under **`PPOConfig.output_dir`** (often **`team-piqasso/outputs/...`** or a path you pass with **`--output-dir`**). Example bundles also appear under **`Graphs/ppo_results/`** and **`Graphs/Alex/outputs/ppo_results/`**.
 
-The standalone PPO GPU script packages the same workflow into a regular Python entry point:
+### `Scripts/`
 
-- it avoids notebook-kernel setup entirely
-- it starts from the same physics-informed seed used in the tutorial examples
-- it runs PPO directly over `g_2` and `epsilon_d`
-- it prints the detected JAX devices so you can confirm that CUDA is active
-- it writes characterization plots and best-decay figures to an output folder
+- **`cmas.py`** — CMA-ES and related optimization / plotting used from notebooks.
+- **`optimize_cat*.py`**, **`pi_pulse_pipeline*.py`**, **`Tx_Tz_optimization.py`**, **`alpha_optimizer.py`**, **`parameter_analysis.py`**, **`leon.py`**, **`Piqasso.py`** — Additional experiments and pipelines; names with **`_old`** / **`_colab`** are alternate or legacy versions.
+- **`Scripts/ppo_batched_parallel_search.py`** — Treat as a secondary copy; for a single source of truth, run **`team-piqasso/ppo_batched_parallel_search.py`** from the repo root.
 
-The new batched PPO runner is the cleaner parallel-search entry point:
+### `Notebooks/`
 
-- it keeps the same physical controls from the challenge notebooks: `g_2` and `epsilon_d`
-- it keeps the same storage-buffer Hamiltonian and loss channels instead of switching to a disconnected toy model
-- it exposes a modular simulator backend, so the PPO loop can use either a fast surrogate or the full Lindblad evolution path
-- it computes one reward per sampled environment from the lifetime objective `0.5 * log(T_X T_Z) - lambda_eta * (log(T_Z / T_X) - log(eta_target))^2`, with the default target bias tuned toward `eta_target = 320`
-- it now treats the bias window as a hard validity region by default, with `100 <= eta <= 750`, so out-of-range candidates receive a strongly invalid reward instead of merely a soft preference
-- it writes plots that show both which `T_X` and `T_Z` values were explored and which best-so-far values ultimately selected the reported `g_2` and `epsilon_d`
+- **`Drift.ipynb`**, **`Detuning.ipynb`**, **`AddZ.ipynb`**, **`notebook.ipynb`** — Topic-specific explorations (drift, detuning, Z-type additions, etc.).
 
-To stay aligned with the tutorial notebooks, the RL notebook also reports simple physics diagnostics such as:
+### `Graphs/`
 
-- effective two-photon rate `kappa_2 = 4 |g_2|^2 / kappa_b`
-- estimated cat size `|alpha|`
-- fast-buffer health checks based on the relationship between `kappa_b`, `g_2`, and `epsilon_d`
-
-The Python script focuses on a different observable:
-
-- it reuses the cat-stabilization Hamiltonian from the challenge notebook
-- it measures decay using the expectation value of the storage-mode parity operator
-- it initializes in an odd-cat parity eigenstate by default
-- it extracts the decay time from the `1/e` crossing of the normalized parity signal relative to its late-time plateau
-- it tunes `g_2` and `epsilon_d` to maximize the fitted parity-decay time
-
-## Outputs
-
-The notebook generates:
-
-- reward versus epoch
-- optimizer trajectories for all four controls
-- estimated `T_X`, `T_Z`, and bias across epochs
-- scatter plots of sampled controls colored by reward
-- final logical decay curves for the best candidate
-
-The RL notebook generates characterization plots showing:
-
-- reward progression and best-so-far reward
-- the Gaussian policy mean and standard deviation over time
-- sampled `g_2` and `epsilon_d` controls, colored by reward
-- metric tradeoffs such as `T_X` versus `T_Z` and fidelity versus leakage
-- histograms of derived cat-qubit diagnostics such as estimated cat size and the fast-buffer ratio
-- explicit logical `T_X` and `T_Z` decay plots for the best PPO-refined candidate
-
-The standalone PPO script writes the same style of outputs:
-
-- PPO reward progression and policy statistics
-- sampled-control tradeoff plots
-- cat-size and fast-buffer histograms
-- best-candidate `T_X` and `T_Z` decay curves
-
-The batched PPO runner adds a more explicit training record:
-
-- best-so-far trajectories for `Re(g_2)`, `Im(g_2)`, `Re(epsilon_d)`, and `Im(epsilon_d)`
-- a combined `T_X` / `T_Z` plot that overlays all tested lifetime values with the best-so-far lifetime traces
-- snapshot decay plots every configured interval, defaulting to every 100 epochs
-- the same output structure whether you use the surrogate backend or the full Lindblad backend
-
-These graphs are meant to help a non-specialist answer a simple question: not just "did the optimizer improve things?" but also "how did it explore and why does the chosen point look physically reasonable?"
-
-The parity script prints the best fitted parity-decay time and writes plots showing:
-
-- best parity-decay lifetime per epoch
-- optimizer mean trajectories for `g_2` and `epsilon_d`
-- sampled controls colored by fitted parity-decay time
-- the best parity trace with its physically constrained decay model and `1/e` extraction
+- Static figures for the write-up and optimizer comparisons; **`Graphs/README.md`** describes graph-specific notes if present.
+- PPO epoch curves and decay snapshots may be duplicated under **`Graphs/ppo_results/`** and **`Graphs/Alex/outputs/ppo_results/`** from different runs.
 
 ## How to run
 
-1. Install the repository requirements from the root:
-   `pip install -r requirements.txt`
-2. Open `team-piqasso/four-parameter-optimizer.ipynb`.
-3. Run the cells from top to bottom.
+1. From the **repository root**, install dependencies:  
+   `pip install -r requirements.txt`  
+   (If you use QuTiP for **`cat_size_proof.py`**, install **qutip** separately if it is not listed.)
 
-To explore the RL refinement workflow:
+2. **CMA / four-parameter notebook**  
+   Open **`team-piqasso/four-parameter-optimizer.ipynb`** and run top to bottom.
 
-1. Install the same repository requirements from the root:
-   `pip install -r requirements.txt`
-2. Open `team-piqasso/rl_refinement_notebook.ipynb`.
-3. Run the cells from top to bottom.
-4. Adjust the physics seed, PPO settings, or reward weights if you want to steer the search differently.
+3. **RL / PPO notebook**  
+   Open **`team-piqasso/rl_refinement_notebook.ipynb`** and run top to bottom (GPU optional if JAX + CUDA are set up).
 
-The notebook includes a GPU setup cell and is written to take advantage of JAX-backed `dynamiqs` execution when a GPU is available. The PPO math is vectorized, and the simulation code stays aligned with the challenge notebooks so it is easy to compare with the rest of the project.
+4. **Batched PPO script** (from repo root):
 
-To run the standalone PPO search on GPU from the repository root, use the WSL environment that has CUDA-enabled JAX installed:
+   ```bash
+   python team-piqasso/ppo_batched_parallel_search.py
+   ```
 
-```bash
-wsl
-source ~/yquantum-gpu-venv/bin/activate
-cd /mnt/c/Users/alexw/Downloads/YQuantum/Piqasso-YQuantumSubmission-Alice-Bob-Challenge
-python team-piqasso/ppo_cat_gpu_search.py
-```
+   GPU example (adjust paths and venv to your machine):
 
-Example quick smoke test:
+   ```bash
+   python team-piqasso/ppo_batched_parallel_search.py --backend lindblad --epochs 1000 --batch-size 12 --replay-sample-size 64 --snapshot-every 100
+   ```
 
-```bash
-python team-piqasso/ppo_cat_gpu_search.py --epochs 1 --batch-size 1 --replay-sample-size 1 --ppo-epochs 1 --na 10 --nb 4 --nsave 24 --x-tfinal 1.0 --z-tfinal 8.0 --output-dir team-piqasso/outputs/ppo_gpu_smoke_test
-```
+   Useful flags: **`--log-every`**, **`--log-candidates`**, **`--quiet`**, **`--eta-min`**, **`--eta-max`**, **`--target-bias`**, **`--lambda-eta`**, **`--eval-x-tfinal`**, **`--eval-z-tfinal`**, **`--eval-nsave`**, **`--output-dir`**.
 
-If the script prints `JAX devices: [CudaDevice(id=0)]`, it is using the GPU path successfully.
+   Quick surrogate smoke test:
 
-To run the new parallelizable PPO runner from the repository root:
+   ```bash
+   python team-piqasso/ppo_batched_parallel_search.py --backend surrogate --epochs 2 --batch-size 4 --replay-sample-size 4 --ppo-epochs 1 --snapshot-every 1 --output-dir team-piqasso/outputs/ppo_batched_parallel_smoke
+   ```
 
-```bash
-python team-piqasso/ppo_batched_parallel_search.py
-```
+   Reduced Lindblad smoke test:
 
-To run the same file on GPU from your CUDA-enabled WSL environment:
+   ```bash
+   python team-piqasso/ppo_batched_parallel_search.py --backend lindblad --epochs 1 --batch-size 1 --replay-sample-size 1 --ppo-epochs 1 --snapshot-every 1 --na 8 --nb 3 --nsave 16 --x-tfinal 0.8 --z-tfinal 6.0 --output-dir team-piqasso/outputs/ppo_batched_parallel_lindblad_smoke
+   ```
 
-```bash
-wsl
-source ~/yquantum-gpu-venv/bin/activate
-cd /mnt/c/Users/alexw/Downloads/YQuantum/Piqasso-YQuantumSubmission-Alice-Bob-Challenge
-python team-piqasso/ppo_batched_parallel_search.py --backend lindblad --epochs 1000 --batch-size 12 --replay-sample-size 64 --snapshot-every 100
-```
+5. **Cat size proof (repo root)**  
+   `python cat_size_proof.py`  
+   Point the save path inside the script to e.g. **`team-piqasso/Graphs/cat_size_proof.png`** if your environment does not use the default output paths.
 
-Useful runtime logging flags:
+If JAX reports **`CudaDevice`**, the heavy simulations can use the GPU; **`CpuDevice`** means CPU-only (still correct, slower).
 
-- `--log-every 1` prints the status of every epoch
-- `--log-candidates` also prints each candidate control point in the batch
-- `--quiet` suppresses the added progress prints if you want a cleaner run later
+## Purpose (plain language)
 
-Useful bias-range flags:
-
-- `--eta-min 100`
-- `--eta-max 750`
-- `--target-bias 320`
-- `--lambda-eta 2.0`
-
-Useful speed flags:
-
-- `--eval-x-tfinal 1.0`
-- `--eval-z-tfinal 24.0`
-- `--eval-nsave 24`
-
-These speed flags only affect the training-time PPO evaluations. The saved decay snapshots still use the larger `--x-tfinal`, `--z-tfinal`, and `--nsave` values so the final plots remain easier to inspect.
-
-Quick surrogate smoke test:
-
-```bash
-python team-piqasso/ppo_batched_parallel_search.py --backend surrogate --epochs 2 --batch-size 4 --replay-sample-size 4 --ppo-epochs 1 --snapshot-every 1 --output-dir team-piqasso/outputs/ppo_batched_parallel_smoke
-```
-
-Reduced Lindblad smoke test:
-
-```bash
-python team-piqasso/ppo_batched_parallel_search.py --backend lindblad --epochs 1 --batch-size 1 --replay-sample-size 1 --ppo-epochs 1 --snapshot-every 1 --na 8 --nb 3 --nsave 16 --x-tfinal 0.8 --z-tfinal 6.0 --output-dir team-piqasso/outputs/ppo_batched_parallel_lindblad_smoke
-```
-
-The new runner is intentionally aligned with the challenge notebook physics. In plain language: it does not just search over arbitrary numbers. It simulates the same storage and buffer interaction used in the challenge material, measures short-horizon logical decay signals, and scores each candidate using physically motivated rewards and penalties.
-
-When the GPU path is active, the script startup log will show something like `JAX devices: [CudaDevice(id=0)]`. If it only shows `CpuDevice`, then the script is still running on CPU.
-
-To run the parity-based optimizer from the repo root:
-
-`python team-piqasso/parity_decay_optimizer.py`
-
-Example quick run:
-
-`python team-piqasso/parity_decay_optimizer.py --epochs 4 --population-size 4 --tfinal 5`
-
-This tooling is meant to be easy to inspect and extend rather than a fully optimized final submission. The CMA notebook gives a broad optimizer, the parity script focuses on parity-decay lifetime, the earlier PPO script provides a direct GPU-search baseline, and the new batched PPO runner provides the cleanest modular path for parallel reward-driven search over `g_2` and `epsilon_d`.
+The notebooks and **`ppo_batched_parallel_search.py`** are meant to be easy to read and extend: they search over **g₂** and **ε_d** in the same spirit as the challenge notebook, score candidates with **T_X**, **T_Z**, and **η**, and save plots so you can see both **whether** the optimizer improved and **how** it explored parameter space.

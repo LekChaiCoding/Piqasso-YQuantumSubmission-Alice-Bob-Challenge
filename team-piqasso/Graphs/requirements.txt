@@ -1,0 +1,5 @@
+dynamiqs>=0.3.0
+cmaes
+scipy
+matplotlib
+ipykernel
