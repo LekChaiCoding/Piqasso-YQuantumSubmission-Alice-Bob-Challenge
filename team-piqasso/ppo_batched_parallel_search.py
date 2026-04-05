@@ -1,5 +1,48 @@
 from __future__ import annotations
 
+"""Batched PPO search over cat-qubit stabilization controls (Alice–Bob challenge).
+
+This module trains a small Gaussian policy over four real parameters:
+``[Re(g2), Im(g2), Re(epsilon_d), Im(epsilon_d)]``, i.e. the same physical
+``g_2`` and ``epsilon_d`` controls used in the tutorial notebooks.
+
+**Pipeline**
+
+1. ``RLParameterRefiner`` samples candidate 4-vectors from a Gaussian policy and
+   clips them to ``ParameterBounds``.
+2. A ``SimulatorBackend`` evaluates an entire batch at once, returning arrays of
+   metrics (notably fitted ``T_X``, ``T_Z``, and ``eta = T_Z / T_X``).
+3. ``build_batched_reward_function`` turns those metrics into per-candidate
+   rewards: encourage long ``T_X``, ``T_Z``, match a target bias ``eta``, and
+   assign a large negative reward when ``eta`` is outside
+   ``[RewardConfig.eta_min, RewardConfig.eta_max]``.
+4. PPO-style clipped updates (plus entropy bonus) adjust policy mean and
+   log-standard-deviation; a ``ReplayBuffer`` mixes past transitions with the
+   latest batch for stability.
+
+**Backends**
+
+- ``SurrogateBackend``: fast, smooth synthetic metrics (good for testing the RL
+  loop without expensive simulations).
+- ``LindbladBackend``: ``dynamiqs`` open-system evolution of the coupled
+  storage–buffer model; lifetimes from exponential fits to logical observables.
+
+**CLI**
+
+From the repo root: ``python team-piqasso/ppo_batched_parallel_search.py``
+(see ``parse_args()`` for flags). Plots and snapshots go to
+``PPOConfig.output_dir``.
+
+**Note**
+
+``RewardConfig`` includes unused weight fields (``w_x``, ``w_p``, …) kept for
+compatibility with other experiments; only the log-lifetime / log-bias reward
+in ``build_batched_reward_function`` is active here.
+
+JAX is configured with ``XLA_PYTHON_CLIENT_PREALLOCATE=false`` (set below) to
+limit GPU memory preallocation.
+"""
+
 import argparse
 import os
 from collections import deque
@@ -21,9 +64,13 @@ from scipy.optimize import least_squares
 
 QUIET = False
 
+# --- Search space: parameterization, bounds, and simulation/reward/PPO settings ---
+
 
 @dataclass(frozen=True)
 class SearchSeedParams:
+    """Physical seed point as complex ``g2`` and ``epsilon_d`` (challenge defaults)."""
+
     epsilon_d: complex
     g2: complex
 
@@ -49,6 +96,8 @@ class SearchSeedParams:
 
 @dataclass(frozen=True)
 class ParameterBounds:
+    """Box constraints on the 4-vector ``[Re(g2), Im(g2), Re(eps_d), Im(eps_d)]``."""
+
     lower: jnp.ndarray
     upper: jnp.ndarray
 
@@ -69,6 +118,13 @@ class ParameterBounds:
 
 @dataclass(frozen=True)
 class SimulationConfig:
+    """Hilbert space sizes, dissipation rates, evolution horizons, and time grids.
+
+    ``eval_*`` fields are used during PPO training steps for cheaper Lindblad
+    runs; full ``x_tfinal`` / ``z_tfinal`` / ``nsave`` apply when generating
+    snapshot traces and plots.
+    """
+
     na: int = 15
     nb: int = 5
     kappa_a: float = 1.0
@@ -84,6 +140,12 @@ class SimulationConfig:
 
 @dataclass(frozen=True)
 class RewardConfig:
+    """Targets and penalties for the scalar reward (see module docstring).
+
+    The ``w_*`` fields are not referenced by ``build_batched_reward_function`` in
+    this file; they are reserved for alternate reward recipes.
+    """
+
     target_bias: float = 320.0
     eta_min: float = 100.0
     eta_max: float = 750.0
@@ -101,6 +163,8 @@ class RewardConfig:
 
 @dataclass(frozen=True)
 class PPOConfig:
+    """Policy sampling batch size, replay, PPO hyperparameters, and logging paths."""
+
     batch_size: int = 12
     replay_capacity: int = 256
     replay_sample_size: int = 24
@@ -120,6 +184,8 @@ class PPOConfig:
 
 @dataclass(frozen=True)
 class CandidateBatch:
+    """Raw Gaussian samples ``actions``, clipped ``parameters``, and ``log_probs``."""
+
     actions: jnp.ndarray
     parameters: jnp.ndarray
     log_probs: jnp.ndarray
@@ -127,6 +193,8 @@ class CandidateBatch:
 
 @dataclass(frozen=True)
 class EvaluationBatch:
+    """One PPO transition row per candidate: policy data plus rewards and metric arrays."""
+
     actions: jnp.ndarray
     parameters: jnp.ndarray
     log_probs: jnp.ndarray
@@ -136,6 +204,8 @@ class EvaluationBatch:
 
 @dataclass(frozen=True)
 class DecayTrace:
+    """Time series and scalar ``metrics`` for plotting logical X/Z decay and diagnostics."""
+
     x_time: np.ndarray
     x_signal: np.ndarray
     x_fit: np.ndarray
@@ -150,6 +220,8 @@ class DecayTrace:
 
 
 class SimulatorBackend(Protocol):
+    """Pluggable batched simulator: returns metric dicts aligned with ``parameter_batch`` rows."""
+
     name: str
 
     def evaluate_batch(self, parameter_batch: jnp.ndarray) -> dict[str, jnp.ndarray]:
@@ -162,6 +234,9 @@ class SimulatorBackend(Protocol):
 def progress(message: str) -> None:
     if not QUIET:
         print(f"[ppo_batched_parallel_search] {message}", flush=True)
+
+
+# --- Physics helpers: decay fitting, reference cat amplitude, dynamiqs builders ---
 
 
 def physics_informed_seed() -> SearchSeedParams:
@@ -316,6 +391,8 @@ def build_logical_operators(
 
 
 def build_batched_reward_function(config: RewardConfig):
+    """JIT-compiled reward: log lifetimes minus squared log-bias error; hard ``eta`` gate."""
+
     @jit
     def reward_fn(metrics: dict[str, jnp.ndarray]) -> jnp.ndarray:
         safe_tx = jnp.maximum(metrics["Tx"], 1e-6)
@@ -381,8 +458,13 @@ def pack_metrics(records: list[dict[str, float]]) -> dict[str, jnp.ndarray]:
     }
 
 
+# --- Simulator backends ---
+
+
 @dataclass
 class SurrogateBackend:
+    """Cheap differentiable stand-in: metrics peak near ``target_vector`` inside bounds."""
+
     seed_params: SearchSeedParams
     bounds: ParameterBounds
     reward_config: RewardConfig
@@ -479,6 +561,8 @@ class SurrogateBackend:
 
 @dataclass
 class LindbladBackend:
+    """Full open-system simulation per candidate; batches are sequential single solves."""
+
     seed_params: SearchSeedParams
     bounds: ParameterBounds
     reward_config: RewardConfig
@@ -710,7 +794,12 @@ class LindbladBackend:
             return {"metrics": penalty_metrics, "trace": zero_trace}
 
 
+# --- PPO: replay storage, Gaussian policy math, refiner loop ---
+
+
 class ReplayBuffer:
+    """FIFO deque of flattened transition dicts; ``sample`` builds an ``EvaluationBatch``."""
+
     def __init__(self, capacity: int, seed: int = 0) -> None:
         self.storage: deque[dict[str, np.ndarray]] = deque(maxlen=capacity)
         self.rng = np.random.default_rng(seed)
@@ -801,6 +890,8 @@ def concatenate_evaluations(primary: EvaluationBatch, secondary: EvaluationBatch
 
 
 class RLParameterRefiner:
+    """Gaussian policy over the 4-vector control, PPO updates, replay, and best-candidate tracking."""
+
     def __init__(
         self,
         *,
@@ -955,12 +1046,17 @@ class RLParameterRefiner:
         return summary
 
     def get_best_parameters(self) -> dict[str, object]:
+        """Return the best-seen candidate (reward, complex controls, metric scalars)."""
         if self.best_record is None:
             raise RuntimeError("No candidate has been evaluated yet.")
         return self.best_record
 
 
+# --- Plotting and CLI ---
+
+
 def save_training_plots(refiner: RLParameterRefiner, output_dir: Path) -> None:
+    """Write epoch curves for best-so-far ``T_X``, ``T_Z``, ``eta``, controls, and ``|alpha|``."""
     history = refiner.history
     epochs = np.array([entry["epoch"] for entry in history], dtype=int)
     best_tx = np.array([entry["best_Tx"] for entry in history], dtype=float)
@@ -1036,6 +1132,7 @@ def save_decay_snapshot(
     filename: str,
     output_dir: Path,
 ) -> None:
+    """Four-panel figure: X/Z decays with fits, codespace/parity traces, metric text."""
     trace = backend.trace_candidate(jnp.asarray(parameters_vector, dtype=jnp.float32))
     fig, axes = plt.subplots(2, 2, figsize=(13, 9))
 
@@ -1115,6 +1212,7 @@ def save_progress_artifacts(
     title_prefix: str,
     decay_filename: str | None = None,
 ) -> None:
+    """Refresh training plots; optionally append a decay snapshot for the current best."""
     if not refiner.history or refiner.best_record is None:
         return
     save_training_plots(refiner, output_dir)
@@ -1129,6 +1227,7 @@ def save_progress_artifacts(
 
 
 def parse_args() -> tuple[SimulationConfig, RewardConfig, PPOConfig, str, bool, bool]:
+    """Parse CLI into config dataclasses plus backend name and logging flags."""
     parser = argparse.ArgumentParser(description="Parallelizable PPO runner for cat-qubit stabilization.")
     parser.add_argument("--backend", choices=["surrogate", "lindblad"], default="lindblad")
     parser.add_argument("--epochs", type=int, default=PPOConfig.epochs)
@@ -1203,6 +1302,7 @@ def parse_args() -> tuple[SimulationConfig, RewardConfig, PPOConfig, str, bool, 
 
 
 def main() -> None:
+    """Wire configs, construct backend and refiner, train, save plots and final best snapshot."""
     global QUIET
     sim_config, reward_config, ppo_config, backend_name, log_candidates, quiet = parse_args()
     QUIET = quiet

@@ -6,6 +6,7 @@ This folder contains standalone exploratory tooling:
 - `rl_refinement_notebook.ipynb`
 - `ppo_cat_gpu_search.py`
 - `ppo_batched_parallel_search.py`
+- `ppo_detuning_sim.py` — minimal CPU-only PPO; default ``--backend lindblad`` uses the challenge Hamiltonian via ``dynamiqs``, or ``--backend surrogate`` for a fast toy landscape (no matplotlib/replay)
 - `parity_decay_optimizer.py`
 
 ## What it does
@@ -41,6 +42,7 @@ The standalone PPO GPU script packages the same workflow into a regular Python e
 
 The new batched PPO runner is the cleaner parallel-search entry point:
 
+- the file `ppo_batched_parallel_search.py` starts with a module docstring and short section headers that explain the training loop, backends, and reward; read that first if you are navigating the source
 - it keeps the same physical controls from the challenge notebooks: `g_2` and `epsilon_d`
 - it keeps the same storage-buffer Hamiltonian and loss channels instead of switching to a disconnected toy model
 - it exposes a modular simulator backend, so the PPO loop can use either a fast surrogate or the full Lindblad evolution path
@@ -173,6 +175,26 @@ Useful speed flags:
 - `--eval-nsave 24`
 
 These speed flags only affect the training-time PPO evaluations. The saved decay snapshots still use the larger `--x-tfinal`, `--z-tfinal`, and `--nsave` values so the final plots remain easier to inspect.
+
+Minimal CPU-only PPO (forces ``JAX_PLATFORMS=cpu`` inside the script). Default backend is Lindblad (real Hamiltonian); add ``--backend surrogate`` for a quick analytic run:
+
+```bash
+python team-piqasso/ppo_detuning_sim.py --epochs 20 --batch-size 4
+python team-piqasso/ppo_detuning_sim.py --backend surrogate --epochs 50 --batch-size 8
+```
+
+With Lindblad, the policy still draws ``--batch-size`` samples each step but only **one** random
+candidate is mesolved unless you pass e.g. ``--sim-budget 4`` (use ``--sim-budget 0`` to evaluate
+the full batch every step).
+
+Storage detuning ``H \\to H + \\Delta a^\\dagger a`` (same storage operator ``a``) uses ``--storage-detuning``
+during PPO; values are clamped to ``[0, 2]``. The detuning sweep also restricts ``\\Delta`` to ``[0, 2]``,
+uses a **coarse** then **local refine** grid on ``\\epsilon_d`` (fast + accurate), and runs **one process
+per ``\\Delta``** by default (``--sweep-workers``).
+
+```bash
+python team-piqasso/ppo_detuning_sim.py --detuning-sweep-plot team-piqasso/outputs/detuning_eps.png --na 8 --nb 3 --eval-nsave 12
+```
 
 Quick surrogate smoke test:
 
