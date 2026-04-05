@@ -67,8 +67,8 @@ NOTEBOOK_TZ_FINAL = 200.0  # µs  (Cell 40: measure_lifetime("+z", 200))
 TARGET_RATIO      = 320.0  # T_Z / T_X noise bias (Cell 42)
 
 # ── CMA-ES hyperparameters ─────────────────────────────────────────────────────
-BATCH_SIZE    = 10
-N_EPOCHS      = 50
+BATCH_SIZE    = 6
+N_EPOCHS      = 20
 SIGMA0        = 0.5
 RATIO_PENALTY = 8.0   # relative penalty weight for T_Z/T_X ratio constraint
 
@@ -292,12 +292,12 @@ def measure_joint(eps_d: float, g2: float) -> dict:
     tx_est = 1.0 / max(kappa_a * alpha**2, 1e-6)
     tz_est = float(np.exp(2.0 * alpha**2)) / kappa_a
     tx_window = float(np.clip(3.0 * tx_est, 0.3, 15.0))
-    tz_window = float(np.clip(3.0 * tz_est, 50.0, 500.0))
+    tz_window = float(np.clip(3.0 * tz_est, 50.0, 300.0))
 
     # Run T_X and T_Z simulations concurrently — they are fully independent
     with ThreadPoolExecutor(max_workers=2) as ex:
-        fut_x = ex.submit(_measure_Tx_inner, H, jumps, psi0_x, alpha, tx_window, 30)
-        fut_z = ex.submit(_measure_Tz_inner, H, jumps, ket_p, ket_m, alpha, tz_window, 50)
+        fut_x = ex.submit(_measure_Tx_inner, H, jumps, psi0_x, alpha, tx_window, 20)
+        fut_z = ex.submit(_measure_Tz_inner, H, jumps, ket_p, ket_m, alpha, tz_window, 25)
         out_x = fut_x.result()
         out_z = fut_z.result()
 
