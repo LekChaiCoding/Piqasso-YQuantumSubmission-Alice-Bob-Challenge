@@ -212,17 +212,26 @@ def _measure_Tx_inner(H, jumps, psi0_x, alpha: float,
 def _measure_Tz_inner(H, jumps, ket_p, ket_m, alpha: float,
                       tfinal: float, n_pts: int) -> dict:
     """Run the T_Z simulation given a pre-built system."""
-    sz_s   = ket_p @ ket_p.dag() - ket_m @ ket_m.dag()
-    sz_op  = dq.tensor(sz_s, dq.eye(nb))
     psi0_z = dq.tensor(ket_p, dq.fock(nb, 0))
     tsave  = jnp.linspace(0.0, tfinal, n_pts)
-    result = dq.mesolve(
-        H, jumps, psi0_z, tsave,
-        exp_ops=[sz_op],
+    a2 = dq.powm(a_op,2)
+
+    res = dq.mesolve(
+        H, 
+        jumps, 
+        psi0_z, 
+        tsave, 
         options=dq.Options(progress_meter=False),
+        exp_ops=[a2, a_op, a_op.dag(), a_op.dag()@a_op]
     )
-    szt = np.array(result.expects[0, :].real)
-    ts  = np.array(tsave)
+    a2_exp = res.expects[0,:]
+    a_exp = res.expects[1,:]
+    adag_exp = res.expects[2,:]
+    num_exp = res.expects[3,:].real
+    phi = jnp.angle(a2_exp)/2
+    Xphi = 0.5*(jnp.exp(1j*phi)*adag_exp+jnp.exp(-1j*phi)*a_exp)/jnp.sqrt(num_exp)
+    szt = jnp.real(Xphi)
+    ts = res.tsave
     if szt[-1] > 0.9 * szt[0]:
         Tz = 5.0 * tfinal
     else:
