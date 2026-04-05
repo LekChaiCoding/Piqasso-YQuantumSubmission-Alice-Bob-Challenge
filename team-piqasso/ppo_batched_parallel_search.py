@@ -229,14 +229,14 @@ def reference_cat_amplitude(
     *,
     kappa_a: float,
     kappa_b: float,
-) -> tuple[complex, complex, float]:
+) -> tuple[complex, float]:
     kappa_2 = max(4.0 * abs(g2) ** 2 / kappa_b, 1e-6)
     eps_2 = 2.0 * g2 * epsilon_d / kappa_b
     alpha_sq = (2.0 * eps_2 / kappa_2) - (kappa_a / (2.0 * kappa_2))
     alpha = complex(jnp.sqrt(jnp.asarray(alpha_sq, dtype=jnp.complex64)))
     if abs(alpha) < 0.5:
         alpha = 0.5 + 0.0j
-    return alpha, eps_2, kappa_2
+    return alpha, kappa_2
 
 
 @lru_cache(maxsize=None)
@@ -426,7 +426,6 @@ class SurrogateBackend:
         g2 = parameter_batch[:, 0] + 1j * parameter_batch[:, 1]
         epsilon_d = parameter_batch[:, 2] + 1j * parameter_batch[:, 3]
         kappa_2 = 4.0 * jnp.abs(g2) ** 2 / self.config.kappa_b
-        eps_2_abs = jnp.abs(2.0 * g2 * epsilon_d / self.config.kappa_b)
         alpha_abs = jnp.sqrt(jnp.maximum(jnp.abs(epsilon_d / jnp.where(jnp.abs(g2) > 1e-6, jnp.conj(g2), 1.0 + 0.0j)), 1e-6))
         action_penalty = (
             jnp.square(jnp.abs(epsilon_d - self.seed_params.epsilon_d) / self.reward_config.delta_eps_max)
@@ -446,8 +445,6 @@ class SurrogateBackend:
             "action_penalty": action_penalty,
             "alpha_abs": alpha_abs,
             "kappa_2": kappa_2,
-            "eps_2_abs": eps_2_abs,
-            "distance_from_seed": seed_distance,
         }
 
     def trace_candidate(self, parameter_vector: jnp.ndarray) -> DecayTrace:
@@ -490,9 +487,6 @@ class LindbladBackend:
     log_candidates: bool = False
     name: str = "lindblad"
 
-    def __post_init__(self) -> None:
-        self.seed_vector = self.seed_params.to_vector()
-
     def evaluate_batch(self, parameter_batch: jnp.ndarray) -> dict[str, jnp.ndarray]:
         parameter_batch = jnp.asarray(parameter_batch, dtype=jnp.float32)
         if self.verbose:
@@ -525,7 +519,7 @@ class LindbladBackend:
         a = static["a"]
         b = static["b"]
 
-        alpha_estimate, eps_2, kappa_2 = reference_cat_amplitude(
+        alpha_estimate, kappa_2 = reference_cat_amplitude(
             g2,
             epsilon_d,
             kappa_a=self.config.kappa_a,
@@ -581,7 +575,6 @@ class LindbladBackend:
             "nbar": np.asarray(result.expects[3].real, dtype=float),
             "codespace_population": np.asarray(result.expects[4].real, dtype=float),
             "alpha_abs": float(abs(alpha_estimate)),
-            "eps_2_abs": float(abs(eps_2)),
             "kappa_2": float(kappa_2),
         }
 
@@ -639,9 +632,6 @@ class LindbladBackend:
                 seed_params=self.seed_params,
                 reward_config=self.reward_config,
             )
-            distance_from_seed = float(
-                scaled_distance_from_seed(parameter_vector[None, :], self.seed_vector, self.bounds)[0]
-            )
             eta_violation = float(max(self.reward_config.eta_min - eta, 0.0))
             invalid_eta = eta < self.reward_config.eta_min or eta > self.reward_config.eta_max
 
@@ -658,9 +648,6 @@ class LindbladBackend:
                 "action_penalty": action_penalty,
                 "alpha_abs": float(z_run["alpha_abs"]),
                 "kappa_2": float(z_run["kappa_2"]),
-                "eps_2_abs": float(z_run["eps_2_abs"]),
-                "distance_from_seed": distance_from_seed,
-                "eta_violation": eta_violation,
             }
 
             if invalid_eta:
@@ -702,11 +689,6 @@ class LindbladBackend:
                 ),
                 "alpha_abs": 0.0,
                 "kappa_2": 0.0,
-                "eps_2_abs": 0.0,
-                "distance_from_seed": float(
-                    scaled_distance_from_seed(parameter_vector[None, :], self.seed_vector, self.bounds)[0]
-                ),
-                "eta_violation": float(max(self.reward_config.eta_min - 1.0, 0.0)),
             }
             if not return_trace:
                 return {"metrics": penalty_metrics}
