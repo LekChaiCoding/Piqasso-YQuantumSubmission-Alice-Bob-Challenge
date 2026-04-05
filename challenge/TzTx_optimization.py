@@ -87,6 +87,9 @@ b_op = dq.tensor(dq.eye(na), dq.destroy(nb))
 parity_s  = (1j * jnp.pi * a_s.dag() @ a_s).expm()
 parity_op = dq.tensor(parity_s, dq.eye(nb))
 
+# Pre-computed a^2 operator (reused in every T_Z simulation)
+a2_op = dq.powm(a_op, 2)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 1.  ANALYTIC ESTIMATES
@@ -214,24 +217,23 @@ def _measure_Tz_inner(H, jumps, ket_p, ket_m, alpha: float,
     """Run the T_Z simulation given a pre-built system."""
     psi0_z = dq.tensor(ket_p, dq.fock(nb, 0))
     tsave  = jnp.linspace(0.0, tfinal, n_pts)
-    a2 = dq.powm(a_op,2)
 
     res = dq.mesolve(
-        H, 
-        jumps, 
-        psi0_z, 
-        tsave, 
+        H,
+        jumps,
+        psi0_z,
+        tsave,
         options=dq.Options(progress_meter=False),
-        exp_ops=[a2, a_op, a_op.dag(), a_op.dag()@a_op]
+        exp_ops=[a2_op, a_op, a_op.dag(), a_op.dag() @ a_op],
     )
-    a2_exp = res.expects[0,:]
-    a_exp = res.expects[1,:]
-    adag_exp = res.expects[2,:]
-    num_exp = res.expects[3,:].real
-    phi = jnp.angle(a2_exp)/2
-    Xphi = 0.5*(jnp.exp(1j*phi)*adag_exp+jnp.exp(-1j*phi)*a_exp)/jnp.sqrt(num_exp)
-    szt = jnp.real(Xphi)
-    ts = res.tsave
+    a2_exp   = res.expects[0, :]
+    a_exp    = res.expects[1, :]
+    adag_exp = res.expects[2, :]
+    num_exp  = jnp.maximum(res.expects[3, :].real, 1e-12)
+    phi  = jnp.angle(a2_exp) / 2
+    Xphi = 0.5 * (jnp.exp(1j * phi) * adag_exp + jnp.exp(-1j * phi) * a_exp) / jnp.sqrt(num_exp)
+    szt = np.array(jnp.real(Xphi))
+    ts  = np.array(res.tsave)
     if szt[-1] > 0.9 * szt[0]:
         Tz = 5.0 * tfinal
     else:
@@ -292,8 +294,12 @@ def measure_joint(eps_d: float, g2: float) -> dict:
     tx_window = float(np.clip(3.0 * tx_est, 0.3, 15.0))
     tz_window = float(np.clip(3.0 * tz_est, 50.0, 500.0))
 
-    out_x = _measure_Tx_inner(H, jumps, psi0_x, alpha, tx_window, n_pts=30)
-    out_z = _measure_Tz_inner(H, jumps, ket_p, ket_m, alpha, tz_window, n_pts=50)
+    # Run T_X and T_Z simulations concurrently — they are fully independent
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        fut_x = ex.submit(_measure_Tx_inner, H, jumps, psi0_x, alpha, tx_window, 30)
+        fut_z = ex.submit(_measure_Tz_inner, H, jumps, ket_p, ket_m, alpha, tz_window, 50)
+        out_x = fut_x.result()
+        out_z = fut_z.result()
 
     Tx    = out_x["T_X"]
     Tz    = out_z["T_Z"]
@@ -328,7 +334,9 @@ def _eval_candidate(x: np.ndarray) -> dict:
                      + RATIO_PENALTY * ratio_err**2)
     except Exception:
         Tx, Tz, ratio, val = 0.0, 0.0, 0.0, 1e6
-    return {"T_X": Tx, "T_Z": Tz, "ratio": ratio, "x": x, "loss": val}
+        out = {"alpha": analytic_alpha(float(x[0]), float(x[1]))}
+    return {"T_X": Tx, "T_Z": Tz, "ratio": ratio, "x": x, "loss": val,
+            "alpha": out["alpha"]}
 
 
 def optimize_joint(
@@ -398,7 +406,7 @@ def optimize_joint(
         history["T_X"].append(bm["T_X"])
         history["T_Z"].append(bm["T_Z"])
         history["ratio"].append(bm["ratio"])
-        history["alpha"].append(analytic_alpha(float(bx[0]), float(bx[1])))
+        history["alpha"].append(bm["alpha"])
         history["eps_d"].append(float(bx[0]))
         history["g2"].append(float(bx[1]))
 
