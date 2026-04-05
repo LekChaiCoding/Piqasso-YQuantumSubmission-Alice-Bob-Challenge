@@ -136,7 +136,7 @@ print(compute_vals(4,0,1,0,-1.0))
 
 from pathlib import Path
 
-res = evolve_state("+z", 200, 4.1727,4.3427,-0.1420,0.3530,-0.1823)
+res = evolve_state("-z", 400, 4.1727,4.3427,-0.1420,0.3530,-0.1823)
 storage_states = dq.ptrace(res.states, 0)
 
 gif = dq.plot.wigner_gif(storage_states)
